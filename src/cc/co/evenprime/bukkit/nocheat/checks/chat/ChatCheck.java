@@ -1,68 +1,62 @@
 package cc.co.evenprime.bukkit.nocheat.checks.chat;
 
+import java.util.HashMap;
+
+import org.bukkit.entity.Player;
+
 import cc.co.evenprime.bukkit.nocheat.NoCheat;
-import cc.co.evenprime.bukkit.nocheat.NoCheatPlayer;
-import cc.co.evenprime.bukkit.nocheat.actions.ParameterName;
-import cc.co.evenprime.bukkit.nocheat.checks.Check;
-import cc.co.evenprime.bukkit.nocheat.config.ConfigurationCacheStore;
-import cc.co.evenprime.bukkit.nocheat.data.DataStore;
+import cc.co.evenprime.bukkit.nocheat.Permissions;
+import cc.co.evenprime.bukkit.nocheat.actions.ActionExecutor;
+import cc.co.evenprime.bukkit.nocheat.actions.ActionExecutorWithHistory;
+import cc.co.evenprime.bukkit.nocheat.actions.types.LogAction;
+import cc.co.evenprime.bukkit.nocheat.config.cache.ConfigurationCache;
+import cc.co.evenprime.bukkit.nocheat.data.ChatData;
 
 /**
- * Abstract base class for Chat checks, provides some convenience
- * methods for access to data and config that's relevant to this checktype
+ * 
+ * @author Evenprime
+ *
  */
-public abstract class ChatCheck extends Check {
+public class ChatCheck {
 
-    private static final String id = "chat";
+    private final ActionExecutor action;
+    private final NoCheat        plugin;
 
-    public ChatCheck(NoCheat plugin, String name) {
-        super(plugin, id, name);
+    public ChatCheck(NoCheat plugin) {
+
+        action = new ActionExecutorWithHistory(plugin);
+        this.plugin = plugin;
     }
 
-    @Override
-    public String getParameter(ParameterName wildcard, NoCheatPlayer player) {
+    public boolean check(Player player, String message, ChatData data, ConfigurationCache cc) {
 
-        if(wildcard == ParameterName.TEXT)
-            // Filter colors from the players message when logging
-            return getData(player).message.replaceAll("\302\247.", "").replaceAll("\247.", "");
-        else
-            return super.getParameter(wildcard, player);
-    }
+        boolean cancel = false;
 
-    /**
-     * Get the "ChatData" object that belongs to the player. Will ensure
-     * that such a object exists and if not, create one
-     * 
-     * @param player
-     * @return
-     */
-    public static ChatData getData(NoCheatPlayer player) {
-        DataStore base = player.getDataStore();
-        ChatData data = base.get(id);
-        if(data == null) {
-            data = new ChatData();
-            base.set(id, data);
+        boolean spamCheck = cc.chat.spamCheck && !player.hasPermission(Permissions.CHAT_SPAM);
+
+        if(spamCheck) {
+
+            int time = plugin.getIngameSeconds();
+
+            if(data.spamLasttime + cc.chat.spamTimeframe <= plugin.getIngameSeconds()) {
+                data.spamLasttime = time;
+                data.messageCount = 0;
+            }
+
+            data.messageCount++;
+
+            if(data.messageCount > cc.chat.spamLimit) {
+
+                // Prepare some event-specific values for logging and custom
+                // actions
+                HashMap<String, String> params = new HashMap<String, String>();
+                params.put(LogAction.CHECK, "chat.spam");
+                params.put(LogAction.TEXT, message);
+                cancel = action.executeActions(player, cc.chat.spamActions, data.messageCount - cc.chat.spamLimit, params, cc);
+            }
         }
-        return data;
+        
+        return cancel;
     }
 
-    /**
-     * Get the ChatConfig object that belongs to the world that the player
-     * currently resides in.
-     * 
-     * @param player
-     * @return
-     */
-    public static ChatConfig getConfig(NoCheatPlayer player) {
-        return getConfig(player.getConfigurationStore());
-    }
-
-    public static ChatConfig getConfig(ConfigurationCacheStore cache) {
-        ChatConfig config = cache.get(id);
-        if(config == null) {
-            config = new ChatConfig(cache.getConfiguration());
-            cache.set(id, config);
-        }
-        return config;
-    }
 }

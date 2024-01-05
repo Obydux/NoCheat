@@ -1,58 +1,58 @@
 package cc.co.evenprime.bukkit.nocheat.checks.blockbreak;
 
+import org.bukkit.Location;
+import org.bukkit.block.Block;
+import org.bukkit.entity.Player;
+import org.bukkit.util.Vector;
+
 import cc.co.evenprime.bukkit.nocheat.NoCheat;
-import cc.co.evenprime.bukkit.nocheat.NoCheatPlayer;
-import cc.co.evenprime.bukkit.nocheat.checks.Check;
-import cc.co.evenprime.bukkit.nocheat.config.ConfigurationCacheStore;
-import cc.co.evenprime.bukkit.nocheat.data.DataStore;
+import cc.co.evenprime.bukkit.nocheat.Permissions;
+import cc.co.evenprime.bukkit.nocheat.config.cache.ConfigurationCache;
+import cc.co.evenprime.bukkit.nocheat.data.BlockBreakData;
 
 /**
- * Abstract base class for BlockBreakChecks. Provides some static convenience
- * methods for retrieving data and config objects for players
- *
+ * The main Check class for blockbreak event checking. It will decide which checks
+ * need to be executed and in which order. It will also precalculate some values
+ * that are needed by multiple checks.
+ * 
+ * @author Evenprime
+ * 
  */
-public abstract class BlockBreakCheck extends Check {
+public class BlockBreakCheck {
 
-    private static final String id = "blockbreak";
+    private final ReachCheck     reachCheck;
+    private final DirectionCheck directionCheck;
 
-    public BlockBreakCheck(NoCheat plugin, String name) {
-        super(plugin, id, name);
+    public BlockBreakCheck(NoCheat plugin) {
+
+        this.reachCheck = new ReachCheck(plugin);
+        this.directionCheck = new DirectionCheck(plugin);
     }
 
-    /**
-     * Get the "BlockBreakData" object that belongs to the player. Will ensure
-     * that such a object exists and if not, create one
-     * 
-     * @param player
-     * @return
-     */
-    public static BlockBreakData getData(NoCheatPlayer player) {
-        DataStore base = player.getDataStore();
-        BlockBreakData data = base.get(id);
-        if(data == null) {
-            data = new BlockBreakData();
-            base.set(id, data);
+    public boolean check(final Player player, final Block brokenBlock, final BlockBreakData data, final ConfigurationCache cc) {
+
+        boolean cancel = false;
+
+        boolean reach = cc.blockbreak.reachCheck && !player.hasPermission(Permissions.BLOCKBREAK_REACH);
+        boolean direction = cc.blockbreak.directionCheck && !player.hasPermission(Permissions.BLOCKBREAK_DIRECTION);
+
+        if((reach || direction) && brokenBlock != null) {
+            Location eyes = player.getEyeLocation();
+
+            final double x1 = ((double) brokenBlock.getX()) - eyes.getX() - 0.5;
+            final double y1 = ((double) brokenBlock.getY()) - eyes.getY() - 0.5;
+            final double z1 = ((double) brokenBlock.getZ()) - eyes.getZ() - 0.5;
+
+            double factor = new Vector(x1 + 1, y1 + 1, z1 + 1).length();
+
+            if(reach) {
+                cancel = reachCheck.check(player, factor, data, cc);
+            }
+
+            if(!cancel && direction && !brokenBlock.getLocation().equals(data.instaBrokeBlockLocation)) {
+                cancel = directionCheck.check(player, factor, x1, y1, z1, data, cc);
+            }
         }
-        return data;
-    }
-
-    /**
-     * Get the BlockBreakConfig object that belongs to the world that the player
-     * currently resides in.
-     * 
-     * @param player
-     * @return
-     */
-    public static BlockBreakConfig getConfig(NoCheatPlayer player) {
-        return getConfig(player.getConfigurationStore());
-    }
-
-    public static BlockBreakConfig getConfig(ConfigurationCacheStore cache) {
-        BlockBreakConfig config = cache.get(id);
-        if(config == null) {
-            config = new BlockBreakConfig(cache.getConfiguration());
-            cache.set(id, config);
-        }
-        return config;
+        return cancel;
     }
 }

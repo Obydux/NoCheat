@@ -1,78 +1,128 @@
 package cc.co.evenprime.bukkit.nocheat.checks.moving;
 
-import java.util.Locale;
+import org.bukkit.Location;
+import org.bukkit.block.Block;
+import org.bukkit.entity.Player;
+
 import cc.co.evenprime.bukkit.nocheat.NoCheat;
-import cc.co.evenprime.bukkit.nocheat.NoCheatPlayer;
-import cc.co.evenprime.bukkit.nocheat.actions.ParameterName;
-import cc.co.evenprime.bukkit.nocheat.checks.Check;
-import cc.co.evenprime.bukkit.nocheat.config.ConfigurationCacheStore;
-import cc.co.evenprime.bukkit.nocheat.data.DataStore;
-import cc.co.evenprime.bukkit.nocheat.data.PreciseLocation;
+import cc.co.evenprime.bukkit.nocheat.Permissions;
+import cc.co.evenprime.bukkit.nocheat.config.cache.ConfigurationCache;
+import cc.co.evenprime.bukkit.nocheat.data.MovingData;
 
 /**
- * Abstract base class for Moving checks, provides some convenience
- * methods for access to data and config that's relevant to this checktype
+ * The main Check class for Move event checking. It will decide which checks
+ * need to be executed and in which order. It will also precalculate some values
+ * that are needed by multiple checks.
+ * 
+ * @author Evenprime
+ * 
  */
-public abstract class MovingCheck extends Check {
+public class MovingCheck {
 
-    private static final String id = "moving";
+    private final FlyingCheck       flyingCheck;
+    private final RunningCheck      runningCheck;
+    private final NoclipCheck       noclippingCheck;
+    private final MorePacketsCheck  morePacketsCheck;
 
-    public MovingCheck(NoCheat plugin, String name) {
-        super(plugin, id, name);
-    }
+    private final MovingEventHelper helper;
 
-    @Override
-    public String getParameter(ParameterName wildcard, NoCheatPlayer player) {
+    public MovingCheck(NoCheat plugin) {
+        this.helper = new MovingEventHelper();
 
-        if(wildcard == ParameterName.LOCATION) {
-            PreciseLocation from = getData(player).from;
-            return String.format(Locale.US, "%.2f,%.2f,%.2f", from.x, from.y, from.z);
-        } else if(wildcard == ParameterName.MOVEDISTANCE) {
-            PreciseLocation from = getData(player).from;
-            PreciseLocation to = getData(player).to;
-            return String.format(Locale.US, "%.2f,%.2f,%.2f", to.x - from.x, to.y - from.y, to.z - from.z);
-        } else if(wildcard == ParameterName.LOCATION_TO) {
-            PreciseLocation to = getData(player).to;
-            return String.format(Locale.US, "%.2f,%.2f,%.2f", to.x, to.y, to.z);
-        } else
-            return super.getParameter(wildcard, player);
-
+        this.flyingCheck = new FlyingCheck(plugin);
+        this.runningCheck = new RunningCheck(plugin);
+        this.noclippingCheck = new NoclipCheck(plugin);
+        this.morePacketsCheck = new MorePacketsCheck(plugin);
     }
 
     /**
-     * Get the "MovingData" object that belongs to the player. Will ensure
-     * that such a object exists and if not, create one
+     * Return the a new destination location or null
      * 
-     * @param player
+     * @param event
      * @return
      */
-    public static MovingData getData(NoCheatPlayer player) {
-        DataStore base = player.getDataStore();
-        MovingData data = base.get(id);
-        if(data == null) {
-            data = new MovingData();
-            base.set(id, data);
+    public Location check(final Player player, final Location from, final Location to, final MovingData data, final ConfigurationCache cc) {
+
+        // Players in vehicles are of no interest
+        if(player.isInsideVehicle())
+            return null;
+
+        /**
+         * If not null, this will be used as the new target location
+         */
+        Location newToLocation = null;
+
+        /******** DO GENERAL DATA MODIFICATIONS ONCE FOR EACH EVENT *****/
+        if(data.horizVelocityCounter > 0) {
+            data.horizVelocityCounter--;
+        } else {
+            data.horizFreedom *= 0.90;
         }
-        return data;
+
+        if(data.vertVelocityCounter > 0) {
+            data.vertVelocityCounter--;
+            data.vertFreedom += data.vertVelocity;
+            data.vertVelocity *= 0.90;
+        } else {
+            data.vertFreedom = 0;
+        }
+
+        /************* DECIDE WHICH CHECKS NEED TO BE RUN *************/
+        final boolean flyCheck = cc.moving.flyingCheck && !player.hasPermission(Permissions.MOVE_FLY);
+        final boolean runCheck = cc.moving.runningCheck && !player.hasPermission(Permissions.MOVE_RUN);
+        final boolean morepacketsCheck = cc.moving.morePacketsCheck && !player.hasPermission(Permissions.MOVE_MOREPACKETS);
+        final boolean noclipCheck = cc.moving.noclipCheck && !player.hasPermission(Permissions.MOVE_NOCLIP);
+
+        /********************* EXECUTE THE FLY/JUMP/RUNNING CHECK ********************/
+        // If the player is not allowed to fly and not allowed to run
+        if(flyCheck && runCheck) {
+            newToLocation = runningCheck.check(player, from, to, helper, cc, data);
+        }
+        // else if he is not allowed to fly
+        else if(flyCheck) {
+            newToLocation = flyingCheck.check(player, from, to, cc, data);
+        }
+        // else don't do anything
+
+        /********* EXECUTE THE MOREPACKETS CHECK ********************/
+
+        if(newToLocation == null && morepacketsCheck) {
+            newToLocation = morePacketsCheck.check(player, cc, data);
+        }
+
+        /********* EXECUTE THE NOCLIP CHECK ********************/
+        if(newToLocation == null && noclipCheck) {
+            newToLocation = noclippingCheck.check(player, from, to, helper, cc, data);
+        }
+        return newToLocation;
     }
 
     /**
-     * Get the MovingConfig object that belongs to the world that the player
-     * currently resides in.
+     * This is a workaround for people placing blocks below them causing false positives
+     * with the move check(s).
      * 
      * @param player
-     * @return
+     * @param data
+     * @param blockPlaced
      */
-    public static MovingConfig getConfig(NoCheatPlayer player) {
-        return getConfig(player.getConfigurationStore());
-    }
+    public void blockPlaced(Player player, MovingData data, Block blockPlaced) {
 
-    public static MovingConfig getConfig(ConfigurationCacheStore cache) {
-        MovingConfig config = cache.get(id);
-        if(config == null) {
-            config = new MovingConfig(cache.getConfiguration());
-            cache.set(id, config);
+        if(blockPlaced == null || data.movingsetBackPoint == null) {
+            return;
         }
-        return config;
+
+        Location lblock = blockPlaced.getLocation();
+        Location lplayer = player.getLocation();
+
+        if(Math.abs(lplayer.getBlockX() - lblock.getBlockX()) <= 1 && Math.abs(lplayer.getBlockZ() - lblock.getBlockZ()) <= 1 && lplayer.getBlockY() - lblock.getBlockY() >= 0 && lplayer.getBlockY() - lblock.getBlockY() <= 2) {
+
+            int type = helper.types[blockPlaced.getTypeId()];
+            if(helper.isSolid(type) || helper.isLiquid(type)) {
+                if(lblock.getBlockY() + 1 >= data.movingsetBackPoint.getY()) {
+                    data.movingsetBackPoint.setY(lblock.getBlockY() + 1);
+                    data.jumpPhase = 0;
+                }
+            }
+        }
     }
 }

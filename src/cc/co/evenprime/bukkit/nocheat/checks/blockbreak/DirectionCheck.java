@@ -1,86 +1,57 @@
 package cc.co.evenprime.bukkit.nocheat.checks.blockbreak;
 
-import java.util.Locale;
+import java.util.HashMap;
+
+import org.bukkit.entity.Player;
+import org.bukkit.util.Vector;
+
 import cc.co.evenprime.bukkit.nocheat.NoCheat;
-import cc.co.evenprime.bukkit.nocheat.NoCheatPlayer;
-import cc.co.evenprime.bukkit.nocheat.actions.ParameterName;
-import cc.co.evenprime.bukkit.nocheat.checks.CheckUtil;
-import cc.co.evenprime.bukkit.nocheat.data.SimpleLocation;
-import cc.co.evenprime.bukkit.nocheat.data.Statistics.Id;
+import cc.co.evenprime.bukkit.nocheat.actions.ActionExecutor;
+import cc.co.evenprime.bukkit.nocheat.actions.ActionExecutorWithHistory;
+import cc.co.evenprime.bukkit.nocheat.actions.types.LogAction;
+import cc.co.evenprime.bukkit.nocheat.config.cache.ConfigurationCache;
+import cc.co.evenprime.bukkit.nocheat.data.BlockBreakData;
 
 /**
  * The DirectionCheck will find out if a player tried to interact with something
  * that's not in his field of view.
  * 
+ * @author Evenprime
+ * 
  */
-public class DirectionCheck extends BlockBreakCheck {
+public class DirectionCheck {
+
+    private final ActionExecutor action;
 
     public DirectionCheck(NoCheat plugin) {
-        super(plugin, "blockbreak.direction");
+        this.action = new ActionExecutorWithHistory(plugin);
     }
 
-    public boolean check(final NoCheatPlayer player, final BlockBreakData data, final BlockBreakConfig ccblockbreak) {
+    public boolean check(Player player, double factor, double x1, double y1, double z1, BlockBreakData data, ConfigurationCache cc) {
 
-        final SimpleLocation brokenBlock = data.brokenBlockLocation;
         boolean cancel = false;
 
-        // How far "off" is the player with his aim. We calculate from the
-        // players eye location and view direction to the center of the target
-        // block. If the line of sight is more too far off, "off" will be
-        // bigger than 0
-        double off = CheckUtil.directionCheck(player, brokenBlock.x + 0.5D, brokenBlock.y + 0.5D, brokenBlock.z + 0.5D, 1D, 1D, ccblockbreak.directionPrecision);
-
-        final long time = System.currentTimeMillis();
-
-        if(off < 0.1D) {
-            // Player did likely nothing wrong
-            // reduce violation counter to reward him
-            data.directionVL *= 0.9D;
+        Vector direction = player.getEyeLocation().getDirection();
+        final double x2 = x1 + 2;
+        final double y2 = y1 + 2;
+        final double z2 = z1 + 2;
+        if(factor * direction.getX() >= x1 && factor * direction.getY() >= y1 && factor * direction.getZ() >= z1 && factor * direction.getX() <= x2 && factor * direction.getY() <= y2 && factor * direction.getZ() <= z2) {
+            // Player did nothing wrong
+            // reduce violation counter
+            data.directionViolationLevel *= 0.9D;
         } else {
             // Player failed the check
             // Increment violation counter
-            if(data.instaBrokenBlockLocation.equals(brokenBlock)) {
-                // Instabreak block failures are very common, so don't be as
-                // hard on people failing them
-                off /= 5;
-            }
+            data.directionViolationLevel += 1;
 
-            // Add to the overall violation level of the check and add to
-            // statistics
-            data.directionVL += off;
-            incrementStatistics(player, Id.BB_DIRECTION, off);
+            // Prepare some event-specific values for logging and custom actions
+            HashMap<String, String> params = new HashMap<String, String>();
+            params.put(LogAction.CHECK, "blockbreak.direction");
 
-            // Execute whatever actions are associated with this check and the
-            // violation level and find out if we should cancel the event
-            cancel = executeActions(player, ccblockbreak.directionActions, data.directionVL);
-
-            if(cancel) {
-                // if we should cancel, remember the current time too
-                data.directionLastViolationTime = time;
-            }
-        }
-
-        // If the player is still in penalty time, cancel the event anyway
-        if(data.directionLastViolationTime + ccblockbreak.directionPenaltyTime > time) {
-            // A saveguard to avoid people getting stuck in penalty time
-            // indefinitely in case the system time of the server gets changed
-            if(data.directionLastViolationTime > time) {
-                data.directionLastViolationTime = 0;
-            }
-
-            // He is in penalty time, therefore request cancelling of the event
-            return true;
+            cancel = action.executeActions(player, cc.blockbreak.directionActions, (int) data.directionViolationLevel, params, cc);
         }
 
         return cancel;
     }
 
-    @Override
-    public String getParameter(ParameterName wildcard, NoCheatPlayer player) {
-
-        if(wildcard == ParameterName.VIOLATIONS)
-            return String.format(Locale.US, "%d", (int) getData(player).directionVL);
-        else
-            return super.getParameter(wildcard, player);
-    }
 }

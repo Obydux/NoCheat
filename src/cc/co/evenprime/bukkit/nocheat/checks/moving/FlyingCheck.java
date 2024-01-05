@@ -1,153 +1,85 @@
 package cc.co.evenprime.bukkit.nocheat.checks.moving;
 
+import java.util.HashMap;
 import java.util.Locale;
+
+import org.bukkit.Location;
+import org.bukkit.entity.Player;
+
 import cc.co.evenprime.bukkit.nocheat.NoCheat;
-import cc.co.evenprime.bukkit.nocheat.NoCheatPlayer;
-import cc.co.evenprime.bukkit.nocheat.actions.ParameterName;
-import cc.co.evenprime.bukkit.nocheat.data.PreciseLocation;
-import cc.co.evenprime.bukkit.nocheat.data.Statistics.Id;
+import cc.co.evenprime.bukkit.nocheat.actions.ActionExecutor;
+import cc.co.evenprime.bukkit.nocheat.actions.ActionExecutorWithHistory;
+import cc.co.evenprime.bukkit.nocheat.actions.types.LogAction;
+import cc.co.evenprime.bukkit.nocheat.config.cache.ConfigurationCache;
+import cc.co.evenprime.bukkit.nocheat.data.MovingData;
 
 /**
- * A check designed for people that are allowed to fly. The complement to
- * the "RunningCheck", which is for people that aren't allowed to fly, and
- * therefore have tighter rules to obey.
+ * A check designed for people that are allowed to fly, but not as fast as they
+ * want. The complement to the "RunningCheck", which is for people that aren't
+ * allowed to fly, and therefore have tighter rules to obey.
+ * 
+ * @author Evenprime
  * 
  */
-public class FlyingCheck extends MovingCheck {
+public class FlyingCheck {
+
+    private final ActionExecutor action;
 
     public FlyingCheck(NoCheat plugin) {
-        super(plugin, "moving.flying");
+        this.action = new ActionExecutorWithHistory(plugin);
     }
 
-    // Determined by trial and error, the flying movement speed of the creative
-    // mode
-    private static final double creativeSpeed = 0.60D;
+    public Location check(Player player, Location from, Location to, ConfigurationCache cc, MovingData data) {
 
-    public PreciseLocation check(NoCheatPlayer player, MovingData data, MovingConfig ccmoving) {
-
-        // The setBack is the location that players may get teleported to when
-        // they fail the check
-        final PreciseLocation setBack = data.runflySetBackPoint;
-
-        final PreciseLocation from = data.from;
-        final PreciseLocation to = data.to;
-
-        // If we have no setback, define one now
-        if(!setBack.isSet()) {
-            setBack.set(from);
+        if(data.movingsetBackPoint == null) {
+            data.movingsetBackPoint = player.getLocation().clone();
         }
 
-        // Used to store the location where the player gets teleported to
-        PreciseLocation newToLocation = null;
-
-        // Before doing anything, do a basic height check to determine if
-        // players are flying too high
-        int maxheight = ccmoving.flyingHeightLimit + player.getPlayer().getWorld().getMaxHeight();
-
-        if(to.y - data.vertFreedom > maxheight) {
-            newToLocation = new PreciseLocation();
-            newToLocation.set(setBack);
-            newToLocation.y = maxheight - 10;
-            return newToLocation;
-        }
+        final double yDistance = to.getY() - from.getY();
 
         // Calculate some distances
-        final double yDistance = to.y - from.y;
-        final double xDistance = to.x - from.x;
-        final double zDistance = to.z - from.z;
-
-        // How far did the player move horizontally
+        final double xDistance = to.getX() - from.getX();
+        final double zDistance = to.getZ() - from.getZ();
         final double horizontalDistance = Math.sqrt((xDistance * xDistance + zDistance * zDistance));
 
-        double resultHoriz = 0;
-        double resultVert = 0;
         double result = 0;
+        Location newToLocation = null;
 
-        // In case of creative game mode give at least 0.60 speed limit horizontal
-        double speedLimitHorizontal = player.isCreative() ? Math.max(creativeSpeed, ccmoving.flyingSpeedLimitHorizontal) : ccmoving.flyingSpeedLimitHorizontal;
+        // super simple, just check distance compared to max distance
+        result += Math.max(0.0D, yDistance - data.vertFreedom - cc.moving.flyingSpeedLimitVertical);
+        result += Math.max(0.0D, horizontalDistance - data.horizFreedom - cc.moving.flyingSpeedLimitHorizontal);
 
-        // If the player is affected by potion of swiftness
-        speedLimitHorizontal *= player.getSpeedAmplifier();
+        result = result * 100;
 
-        // Finally, determine how far the player went beyond the set limits
-        resultHoriz = Math.max(0.0D, horizontalDistance - data.horizFreedom - speedLimitHorizontal);
-
-        boolean sprinting = player.isSprinting();
-
-        data.bunnyhopdelay--;
-
-        if(resultHoriz > 0 && sprinting) {
-
-            // Try to treat it as a the "bunnyhop" problem
-            // The bunnyhop problem is that landing and immediatly jumping
-            // again leads to a player moving almost twice as far in that step
-            if(data.bunnyhopdelay <= 0 && resultHoriz < 0.4D) {
-                data.bunnyhopdelay = 9;
-                resultHoriz = 0;
-            }
-        }
-
-        resultHoriz *= 100;
-
-        // Is the player affected by the "jumping" potion
-        // This is really just a very, very crude estimation and far from
-        // reality
-        double jumpAmplifier = player.getJumpAmplifier();
-        if(jumpAmplifier > data.lastJumpAmplifier) {
-            data.lastJumpAmplifier = jumpAmplifier;
-        }
-
-        double speedLimitVertical = ccmoving.flyingSpeedLimitVertical * data.lastJumpAmplifier;
-
-        if(data.from.y >= data.to.y && data.lastJumpAmplifier > 0) {
-            data.lastJumpAmplifier--;
-        }
-
-        // super simple, just check distance compared to max distance vertical
-        resultVert = Math.max(0.0D, yDistance - data.vertFreedom - speedLimitVertical) * 100;
-
-        result = resultHoriz + resultVert;
-
-        // The player went to far, either horizontal or vertical
         if(result > 0) {
 
-            // Increment violation counter and statistics
-            data.runflyVL += result;
-            if(resultHoriz > 0) {
-                incrementStatistics(player, Id.MOV_RUNNING, resultHoriz);
-            }
+            // Increment violation counter
+            data.movingViolationLevel += result;
 
-            if(resultVert > 0) {
-                incrementStatistics(player, Id.MOV_FLYING, resultVert);
-            }
+            // Prepare some event-specific values for logging and custom actions
+            HashMap<String, String> params = new HashMap<String, String>();
+            params.put(LogAction.DISTANCE, String.format(Locale.US, "%.2f,%.2f,%.2f", xDistance, yDistance, zDistance));
+            params.put(LogAction.LOCATION_TO, String.format(Locale.US, "%.2f,%.2f,%.2f", to.getX(), to.getY(), to.getZ()));
+            params.put(LogAction.CHECK, "flyingspeed");
 
-            // Execute whatever actions are associated with this check and the
-            // violation level and find out if we should cancel the event
-            boolean cancel = executeActions(player, ccmoving.flyingActions, data.runflyVL);
+            boolean cancel = action.executeActions(player, cc.moving.flyingActions, (int) data.movingViolationLevel, params, cc);
 
             // Was one of the actions a cancel? Then really do it
             if(cancel) {
-                newToLocation = setBack;
+                newToLocation = data.movingsetBackPoint;
             }
         }
 
-        // Slowly reduce the violation level with each event
-        data.runflyVL *= 0.97;
+        // Slowly reduce the level with each event
+        data.movingViolationLevel *= 0.97;
 
-        // If the player did not get cancelled, define a new setback point
+        // Some other cleanup 'n' stuff
         if(newToLocation == null) {
-            setBack.set(to);
+            data.movingsetBackPoint = to.clone();
         }
 
+        data.jumpPhase = 0;
         return newToLocation;
     }
 
-    @Override
-    public String getParameter(ParameterName wildcard, NoCheatPlayer player) {
-
-        if(wildcard == ParameterName.VIOLATIONS)
-            return String.format(Locale.US, "%d", (int) getData(player).runflyVL);
-        else
-            return super.getParameter(wildcard, player);
-    }
 }

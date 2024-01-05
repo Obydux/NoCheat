@@ -1,34 +1,27 @@
 package cc.co.evenprime.bukkit.nocheat;
 
-import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
-import java.util.logging.Logger;
-import org.bukkit.Bukkit;
+
 import org.bukkit.World;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandSender;
-import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.Listener;
 import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.plugin.java.JavaPlugin;
-import cc.co.evenprime.bukkit.nocheat.checks.WorkaroundsListener;
-import cc.co.evenprime.bukkit.nocheat.checks.blockbreak.BlockBreakCheckListener;
-import cc.co.evenprime.bukkit.nocheat.checks.blockplace.BlockPlaceCheckListener;
-import cc.co.evenprime.bukkit.nocheat.checks.chat.ChatCheckListener;
-import cc.co.evenprime.bukkit.nocheat.checks.fight.FightCheckListener;
-import cc.co.evenprime.bukkit.nocheat.checks.inventory.InventoryCheckListener;
-import cc.co.evenprime.bukkit.nocheat.checks.moving.MovingCheckListener;
-import cc.co.evenprime.bukkit.nocheat.command.CommandHandler;
-import cc.co.evenprime.bukkit.nocheat.config.ConfigurationCacheStore;
+
+import cc.co.evenprime.bukkit.nocheat.actions.ActionManager;
 import cc.co.evenprime.bukkit.nocheat.config.ConfigurationManager;
-import cc.co.evenprime.bukkit.nocheat.config.NoCheatConfiguration;
-import cc.co.evenprime.bukkit.nocheat.config.Permissions;
-import cc.co.evenprime.bukkit.nocheat.data.PlayerManager;
-import cc.co.evenprime.bukkit.nocheat.debug.ActiveCheckPrinter;
-import cc.co.evenprime.bukkit.nocheat.debug.LagMeasureTask;
+import cc.co.evenprime.bukkit.nocheat.config.cache.ConfigurationCache;
+import cc.co.evenprime.bukkit.nocheat.data.DataManager;
+
+import cc.co.evenprime.bukkit.nocheat.events.BlockPlaceEventManager;
+import cc.co.evenprime.bukkit.nocheat.events.BlockBreakEventManager;
+import cc.co.evenprime.bukkit.nocheat.events.EventManager;
+import cc.co.evenprime.bukkit.nocheat.events.PlayerChatEventManager;
+import cc.co.evenprime.bukkit.nocheat.events.PlayerItemDropEventManager;
+import cc.co.evenprime.bukkit.nocheat.events.PlayerInteractEventManager;
+import cc.co.evenprime.bukkit.nocheat.events.PlayerMoveEventManager;
+import cc.co.evenprime.bukkit.nocheat.events.PlayerTeleportEventManager;
+import cc.co.evenprime.bukkit.nocheat.log.LogLevel;
+import cc.co.evenprime.bukkit.nocheat.log.LogManager;
 
 /**
  * 
@@ -36,17 +29,24 @@ import cc.co.evenprime.bukkit.nocheat.debug.LagMeasureTask;
  * 
  * Check various player events for their plausibility and log/deny them/react to
  * them based on configuration
+ * 
+ * @author Evenprime
  */
-public class NoCheat extends JavaPlugin implements Listener {
+public class NoCheat extends JavaPlugin {
 
     private ConfigurationManager conf;
-    private CommandHandler       commandHandler;
-    private PlayerManager        players;
+    private LogManager           log;
+    private DataManager          data;
 
-    private List<EventManager>   eventManagers;
+    private List<EventManager>   eventManagers            = new LinkedList<EventManager>();
 
-    private LagMeasureTask       lagMeasureTask;
-    private Logger               fileLogger;
+    private int                  taskId                   = -1;
+    private int                  ingameseconds            = 0;
+    private long                 lastIngamesecondTime     = 0L;
+    private long                 lastIngamesecondDuration = 0L;
+    private boolean              skipCheck                = false;
+
+    private ActionManager        action;
 
     public NoCheat() {
 
@@ -54,153 +54,132 @@ public class NoCheat extends JavaPlugin implements Listener {
 
     public void onDisable() {
 
+        if(taskId != -1) {
+            this.getServer().getScheduler().cancelTask(taskId);
+            taskId = -1;
+        }
         PluginDescriptionFile pdfFile = this.getDescription();
 
-        if(lagMeasureTask != null) {
-            lagMeasureTask.cancel();
-            lagMeasureTask = null;
-        }
-
-        if(conf != null) {
+        if(conf != null)
             conf.cleanup();
-            conf = null;
-        }
 
-        // Just to be sure nothing gets left out
-        getServer().getScheduler().cancelTasks(this);
-
-        commandHandler = null;
-
-        System.out.println("[NoCheat] version [" + pdfFile.getVersion() + "] is disabled.");
+        log.logToConsole(LogLevel.LOW, "[NoCheat] version [" + pdfFile.getVersion() + "] is disabled.");
     }
 
     public void onEnable() {
 
-        // Then set up in memory per player data storage
-        this.players = new PlayerManager(this);
+        // First set up logging
+        this.log = new LogManager(this);
+        this.data = new DataManager();
 
-        this.commandHandler = new CommandHandler(this);
-        // Then read the configuration files
-        this.conf = new ConfigurationManager(this, this.getDataFolder());
+        this.action = new ActionManager(log);
 
-        eventManagers = new ArrayList<EventManager>(8); // Big enough
-        // Then set up the event listeners
-        eventManagers.add(new MovingCheckListener(this));
-        eventManagers.add(new WorkaroundsListener());
-        eventManagers.add(new ChatCheckListener(this));
-        eventManagers.add(new BlockBreakCheckListener(this));
-        eventManagers.add(new BlockPlaceCheckListener(this));
-        eventManagers.add(new FightCheckListener(this));
-        eventManagers.add(new InventoryCheckListener(this));
+        // parse the nocheat.yml config file
+        this.conf = new ConfigurationManager(this.getDataFolder().getPath(), action);
 
-        // Then set up a task to monitor server lag
-        if(lagMeasureTask == null) {
-            lagMeasureTask = new LagMeasureTask(this);
-            lagMeasureTask.start();
+        eventManagers.add(new PlayerMoveEventManager(this));
+        eventManagers.add(new PlayerTeleportEventManager(this));
+        eventManagers.add(new PlayerItemDropEventManager(this));
+        eventManagers.add(new PlayerInteractEventManager(this));
+        eventManagers.add(new PlayerChatEventManager(this));
+        eventManagers.add(new BlockBreakEventManager(this));
+        eventManagers.add(new BlockPlaceEventManager(this));
+
+        PluginDescriptionFile pdfFile = this.getDescription();
+
+        if(taskId == -1) {
+            taskId = this.getServer().getScheduler().scheduleSyncRepeatingTask(this, new Runnable() {
+
+                @Override
+                public void run() {
+
+                    // If the previous second took to long, skip checks during
+                    // this second
+                    skipCheck = lastIngamesecondDuration > 1500;
+
+                    long time = System.currentTimeMillis();
+                    lastIngamesecondDuration = time - lastIngamesecondTime;
+                    if(lastIngamesecondDuration < 1000)
+                        lastIngamesecondDuration = 1000;
+                    lastIngamesecondTime = time;
+                    ingameseconds++;
+                }
+            }, 0, 20);
         }
 
-        // Then print a list of active checks per world
-        ActiveCheckPrinter.printActiveChecks(this, eventManagers);
+        printActiveChecks();
 
-        // register all listeners
-        for(EventManager eventManager : eventManagers) {
-            Bukkit.getPluginManager().registerEvents(eventManager, this);
-        }
-
-        Bukkit.getPluginManager().registerEvents(this, this);
-
-        NoCheatConfiguration.writeInstructions(this.getDataFolder());
-
-        // Tell the server admin that we finished loading NoCheat now
-        System.out.println("[NoCheat] version [" + this.getDescription().getVersion() + "] is enabled.");
+        log.logToConsole(LogLevel.LOW, "[NoCheat] version [" + pdfFile.getVersion() + "] is enabled.");
     }
 
-    public ConfigurationCacheStore getConfig(Player player) {
-        if(player != null)
-            return getConfig(player.getWorld());
-        else
-            return conf.getConfigurationCacheForWorld(null);
+    public ConfigurationManager getConfigurationManager() {
+        return conf;
     }
 
-    public ConfigurationCacheStore getConfig(World world) {
-        if(world != null)
-            return conf.getConfigurationCacheForWorld(world.getName());
-        else
-            return conf.getConfigurationCacheForWorld(null);
+    public LogManager getLogManager() {
+        return log;
     }
 
-    @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        boolean result = commandHandler.handleCommand(this, sender, command, label, args);
+    public DataManager getDataManager() {
+        return data;
+    }
 
-        return result;
+    public ActionManager getActionManager() {
+        return action;
+    }
+
+    public int getIngameSeconds() {
+        return ingameseconds;
+    }
+
+    public long getIngameSecondDuration() {
+        return lastIngamesecondDuration;
     }
 
     public boolean skipCheck() {
-        if(lagMeasureTask != null)
-            return lagMeasureTask.skipCheck();
-        return false;
-    }
-
-    public void reloadConfiguration() {
-        conf.cleanup();
-        this.conf = new ConfigurationManager(this, this.getDataFolder());
-        players.cleanDataMap();
+        return skipCheck;
     }
 
     /**
-     * Call this periodically to walk over the stored data map and remove
-     * old/unused entries
-     * 
+     * Print the list of active checks to the console, on a per world basis
      */
-    public void cleanDataMap() {
-        players.cleanDataMap();
-    }
+    private void printActiveChecks() {
 
-    /**
-     * An interface method usable by other plugins to collect information about
-     * a player. It will include the plugin version, two timestamps (beginning
-     * and end of data collection for that player), and various data from
-     * checks)
-     * 
-     * @param playerName
-     *            a player name
-     * @return A newly created map of identifiers and corresponding values
-     */
-    public Map<String, Object> getPlayerData(String playerName) {
+        boolean introPrinted = false;
+        String intro = "[NoCheat] Active Checks: ";
 
-        Map<String, Object> map = players.getPlayerData(playerName);
+        // Print active checks for NoCheat, if needed.
+        for(World world : this.getServer().getWorlds()) {
 
-        map.put("nocheat.version", this.getDescription().getVersion());
+            StringBuilder line = new StringBuilder("  ").append(world.getName()).append(": ");
 
-        return map;
-    }
+            int length = line.length();
 
-    public NoCheatPlayer getPlayer(Player player) {
-        return players.getPlayer(player);
-    }
+            ConfigurationCache cc = this.conf.getConfigurationCacheForWorld(world.getName());
 
-    @EventHandler(priority = EventPriority.MONITOR)
-    public void logEvent(NoCheatLogEvent event) {
-        if(event.toConsole()) {
-            // Console logs are not colored
-            System.out.println(Colors.removeColors(event.getPrefix() + event.getMessage()));
-        }
-        if(event.toChat()) {
-            for(Player player : Bukkit.getServer().getOnlinePlayers()) {
-                if(player.hasPermission(Permissions.ADMIN_CHATLOG)) {
-                    // Chat logs are potentially colored
-                    player.sendMessage(Colors.replaceColors(event.getPrefix() + event.getMessage()));
+            if(cc.debug.showchecks) {
+                for(EventManager em : eventManagers) {
+                    List<String> checks = em.getActiveChecks(cc);
+                    if(checks.size() > 0) {
+                        for(String active : em.getActiveChecks(cc)) {
+                            line.append(active).append(' ');
+                        }
+
+                        if(!introPrinted) {
+                            log.logToConsole(LogLevel.LOW, intro);
+                            introPrinted = true;
+                        }
+
+                        log.logToConsole(LogLevel.LOW, line.toString());
+
+                        line = new StringBuilder(length);
+
+                        for(int i = 0; i < length; i++) {
+                            line.append(' ');
+                        }
+                    }
                 }
             }
         }
-        if(event.toFile()) {
-            // File logs are not colored
-            fileLogger.info(Colors.removeColors(event.getMessage()));
-        }
-    }
-
-    public void setFileLogger(Logger logger) {
-        this.fileLogger = logger;
     }
 }
