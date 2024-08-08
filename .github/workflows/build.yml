@@ -16,7 +16,8 @@ jobs:
         distribution: 'temurin'
         cache: maven
     - name: Build NoCheat
-      run: mvn clean install
+      run: chmod +x ./gradlew
+      run: ./gradlew b
     - name: Upload artifact
       uses: actions/upload-artifact@v3
       with:
