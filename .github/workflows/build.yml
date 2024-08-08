@@ -6,6 +6,9 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
     - uses: actions/checkout@v3
@@ -14,11 +17,14 @@ jobs:
       with:
         java-version: '8'
         distribution: 'temurin'
-        cache: maven
+        server-id: github
+        settings-path: ${{ github.workspace }
+
     - name: Build NoCheat
-      run: ./gradlew b
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: gradle/gradle-build-action@67421db6bd0bf253fb4bd25b31ebb98943c375e1
       with:
-        name: NoCheat
+        arguments: build
+    - name: Upload a Build Artifact
+      uses: actions/upload-artifact@v3.1.0
+      with:
         path: ./build/libs/**.jar
